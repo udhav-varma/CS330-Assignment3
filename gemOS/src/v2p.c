@@ -23,7 +23,112 @@ long vm_area_mprotect(struct exec_context *current, u64 addr, int length, int pr
  */
 long vm_area_map(struct exec_context *current, u64 addr, int length, int prot, int flags)
 {
-    return -EINVAL;
+    struct vm_area * list = current->vm_area;
+    if(list == NULL){
+        struct vm_area * headnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+        headnode->access_flags = 0x0;
+        headnode->vm_start = MMAP_AREA_START;
+        headnode->vm_end = MMAP_AREA_START + 4096;
+        headnode->vm_next = NULL;
+        current->vm_area = headnode;
+    }
+    if(addr < MMAP_AREA_START || addr >= MMAP_AREA_END) return -EINVAL;
+    int allotAddr = -EINVAL;
+    if(flags == MAP_FIXED){
+        if(addr == 0) return -EINVAL;
+        if(!(addr >= MMAP_AREA_START && addr + length <= MMAP_AREA_END)) return -EINVAL;
+
+        struct vm_area * ptr = current->vm_area, * pptr = ptr;
+        while(ptr != NULL && ptr->vm_end <= addr){
+            pptr = ptr;
+            ptr = ptr->vm_next;
+        }
+        if(pptr->vm_end <= addr){
+            if(ptr == NULL || ptr->vm_start >= addr + length){
+                struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                newnode->vm_start = addr;
+                newnode->vm_end = addr + length;
+                newnode->access_flags = prot;
+                newnode->vm_next = ptr;
+                pptr->vm_next = newnode;
+                allotAddr = addr;
+                goto mergenodes;
+            }
+            else return -EINVAL;
+        }
+        else return -EINVAL;
+    }
+    else{
+        if(addr != 0 && addr >= MMAP_AREA_START && addr + length <= MMAP_AREA_END){
+            struct vm_area * ptr = current->vm_area, * pptr = ptr;
+            while(ptr != NULL && ptr->vm_end <= addr){
+                pptr = ptr;
+                ptr = ptr->vm_next;
+            }
+            if(pptr->vm_end <= addr){
+                if(ptr == NULL || ptr->vm_start >= addr + length){
+                    struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    newnode->vm_start = addr;
+                    newnode->vm_end = addr + length;
+                    newnode->access_flags = prot;
+                    newnode->vm_next = ptr;
+                    pptr->vm_next = newnode;
+                    allotAddr = addr;
+                    goto mergenodes;
+                }
+            }
+        }
+        struct vm_area * ptr = current->vm_area, * pptr = ptr;
+        while(ptr != NULL){
+            pptr = ptr;
+            ptr = ptr->vm_next;
+            if(ptr != NULL){
+                if(ptr->vm_start >= pptr->vm_end + length){
+                    struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    newnode->vm_start = pptr->vm_end;
+                    newnode->vm_end = pptr->vm_end + length;
+                    newnode->access_flags = prot;
+                    newnode->vm_next = ptr;
+                    pptr->vm_next = newnode;
+                    allotAddr = newnode->vm_start;
+                    goto mergenodes;
+                }
+            }
+            else{
+                if(MMAP_AREA_END >= pptr->vm_end + length){
+                    struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    newnode->vm_start = pptr->vm_end;
+                    newnode->vm_end = pptr->vm_end + length;
+                    newnode->access_flags = prot;
+                    newnode->vm_next = ptr;
+                    pptr->vm_next = newnode;
+                    allotAddr = newnode->vm_start;
+                    goto mergenodes;
+                }
+            }
+        }
+        return -EINVAL;
+    }
+
+mergenodes:
+{
+    struct vm_area * pptr = current->vm_area, *ptr = pptr->vm_next;
+    while(ptr != NULL){
+        struct vm_area * hptr = ptr->vm_next;
+        struct vm_area * prev = ptr;
+        while(hptr != NULL && prev->access_flags == hptr->access_flags && prev->vm_end == hptr->vm_start){
+            struct vm_area * hold = hptr;
+            prev = hptr;
+            hptr = hptr->vm_next;
+            os_free(hold, sizeof(struct vm_area));
+        }
+        ptr->vm_end = prev->vm_end;
+        ptr->vm_next = hptr;
+        pptr = ptr;
+        ptr = ptr->vm_next;        
+    }
+}
+    return allotAddr;
 }
 
 /**
