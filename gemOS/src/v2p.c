@@ -306,6 +306,17 @@ long vm_area_unmap(struct exec_context *current, u64 addr, int length)
 
 long vm_area_pagefault(struct exec_context *current, u64 addr, int error_code)
 {
+    struct vm_area * ptr = current->vm_area;
+    while(ptr != NULL && ptr->vm_end <= addr){
+        ptr = ptr->vm_next;
+    }
+    if(ptr == NULL || ptr->vm_start > addr){
+        return -1; // No matching vma
+    }
+    if(error_code == 0x6 && ((ptr->access_flags & O_WRITE) == 0)){
+        return -1; // Write on area with no write access
+    }
+    
     return -1;
 }
 
