@@ -17,14 +17,14 @@ int present_page(u64 page_entry)
 /**
  * Dellocates page at `addr`
 */
-void deallocate_page(struct exec_context * current, u64 addr)
+void deallocate_page(struct exec_context * current, long addr)
 {
     long pfn = current->pgd;
     long * table, offset;
     for(int c = 0; c < 4; c++){
         table = osmap(pfn);
         offset = ((addr >> (39 - 9*c)) & ((1ull << 9) - 1));
-        if(!present_page(table[offset])) return;
+        // if(!present_page(table[offset])) return;
         pfn = (table[offset] >> 12);
     }
 
@@ -32,11 +32,11 @@ void deallocate_page(struct exec_context * current, u64 addr)
         if(get_pfn_refcount(pfn) == 1){
             put_pfn(pfn);
             os_pfn_free(USER_REG, pfn);
-            table[offset] ^= 1;
+            table[offset] = 0;
         }
         else{
             put_pfn(pfn);
-            table[offset] ^= 1;
+            table[offset] = 0;
         }
     }
     asm volatile("invlpg (%0)" :: "r" (addr) : "memory");
@@ -79,7 +79,7 @@ int memcopy(u64 begin, u64 pgd1, u64 pgd2)
 */
 int memcopy_range(u64 begin, u64 end, u64 pgd1, u64 pgd2)
 {
-    printk("here4\n");
+    // printk("here4\n");
     begin = (begin >> 12) << 12;
     for(long addr = begin; addr < end; addr += 4096){
         if(memcopy(addr, pgd1, pgd2) == -1) return -1;
@@ -127,6 +127,7 @@ void change_range_access(u64 start, u64 end, int prot, struct exec_context * cur
 
 void deallocate_range(u64 start, u64 end, struct exec_context * curr)
 {
+    // printk("here %x %x\n", start, end);
     while(start < end){
         deallocate_page(curr, start);
         start += 4096;
@@ -153,6 +154,7 @@ long vm_area_mprotect(struct exec_context *current, u64 addr, int length, int pr
                 }
                 else{
                     struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    if(newnode == NULL) return -1;
                     newnode->access_flags = ptr->access_flags;
                     newnode->vm_end = ptr->vm_end;
                     newnode->vm_start = end;
@@ -167,6 +169,7 @@ long vm_area_mprotect(struct exec_context *current, u64 addr, int length, int pr
             else{
                 if(end >= ptr->vm_end){
                     struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    if(newnode == NULL) return -1;
                     newnode->vm_start = addr;
                     newnode->vm_end = ptr->vm_end;
                     newnode->vm_next = ptr->vm_next;
@@ -179,6 +182,7 @@ long vm_area_mprotect(struct exec_context *current, u64 addr, int length, int pr
                 else{
                     struct vm_area * bwnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
                     struct vm_area * rnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    if(bwnode == NULL || rnode == NULL) return -1;
                     bwnode->access_flags = prot;
                     bwnode->vm_end = end;
                     bwnode->vm_start = addr;
@@ -238,6 +242,7 @@ long vm_area_map(struct exec_context *current, u64 addr, int length, int prot, i
     if(list == NULL){
         // printk("Enter null\n");
         struct vm_area * headnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+        if(headnode == NULL) return -1;
         headnode->access_flags = 0x0;
         headnode->vm_start = MMAP_AREA_START;
         headnode->vm_end = MMAP_AREA_START + 4096;
@@ -262,6 +267,7 @@ long vm_area_map(struct exec_context *current, u64 addr, int length, int prot, i
         if(pptr->vm_end <= addr){
             if(ptr == NULL || ptr->vm_start >= addr + length){
                 struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                if(newnode == NULL) return -1;
                 newnode->vm_start = addr;
                 newnode->vm_end = addr + length;
                 newnode->access_flags = prot;
@@ -284,6 +290,7 @@ long vm_area_map(struct exec_context *current, u64 addr, int length, int prot, i
             if(pptr->vm_end <= addr){
                 if(ptr == NULL || ptr->vm_start >= addr + length){
                     struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    if(newnode == NULL) return -1;
                     newnode->vm_start = addr;
                     newnode->vm_end = addr + length;
                     newnode->access_flags = prot;
@@ -304,6 +311,7 @@ long vm_area_map(struct exec_context *current, u64 addr, int length, int prot, i
             if(ptr != NULL){
                 if(ptr->vm_start >= pptr->vm_end + length){
                     struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    if(newnode == NULL) return -1;
                     newnode->vm_start = pptr->vm_end;
                     newnode->vm_end = pptr->vm_end + length;
                     newnode->access_flags = prot;
@@ -317,6 +325,7 @@ long vm_area_map(struct exec_context *current, u64 addr, int length, int prot, i
                 if(MMAP_AREA_END >= pptr->vm_end + length){
                     // printk("Allot\n");
                     struct vm_area * newnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    if(newnode == NULL) return -1;
                     newnode->vm_start = pptr->vm_end;
                     newnode->vm_end = pptr->vm_end + length;
                     newnode->access_flags = prot;
@@ -406,6 +415,7 @@ long vm_area_unmap(struct exec_context *current, u64 addr, int length)
                     deallocate_range(addr, end, current);
                     addr = end;
                     struct vm_area * endnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+                    if(endnode == NULL) return -1;
                     endnode->vm_start = end;
                     endnode->vm_end = hold;
                     endnode->access_flags = ptr->access_flags;
@@ -440,6 +450,7 @@ long vm_area_pagefault(struct exec_context *current, u64 addr, int error_code)
     struct vm_area * ptr = current->vm_area;
     if(ptr == NULL){
         struct vm_area * headnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+        if(headnode == NULL) return -1;
         headnode->access_flags = 0x0;
         headnode->vm_start = MMAP_AREA_START;
         headnode->vm_end = MMAP_AREA_START + 4096;
@@ -450,7 +461,7 @@ long vm_area_pagefault(struct exec_context *current, u64 addr, int error_code)
     while(ptr != NULL && ptr->vm_end <= addr){
         ptr = ptr->vm_next;
     }
-    printk("here2\n");
+    // printk("here2\n");
     if(ptr == NULL || ptr->vm_start > addr){
         return -1; // No matching vma
     }
@@ -460,7 +471,7 @@ long vm_area_pagefault(struct exec_context *current, u64 addr, int error_code)
     if(error_code == 0x7){
         if((ptr->access_flags & O_WRITE) == 0) return -1;
         handle_cow_fault(current, addr, ptr->access_flags);
-        printk("here\n");
+        // printk("here\n");
         return 1;
     }
     const long pru_flags = ((1ull << 4) | (1ull << 3) | 1ull);
@@ -514,37 +525,42 @@ long do_cfork(){
      /*--------------------- Your code [end] ----------------*/
     // vm_area
     pid = new_ctx->pid;
+    new_ctx->alarm_config_time = ctx->alarm_config_time;
+    new_ctx->ctx_threads = ctx->ctx_threads;
     new_ctx->ppid = ctx->pid;
-    new_ctx->type = ctx->type;
+    new_ctx->pending_signal_bitmap = ctx->pending_signal_bitmap;
+    new_ctx->regs = ctx->regs;
     new_ctx->state = ctx->state;
+    new_ctx->type = ctx->type;
+    new_ctx->ticks_to_alarm = ctx->ticks_to_alarm;
+    new_ctx->ticks_to_sleep = ctx->ticks_to_sleep;
     new_ctx->used_mem = ctx->used_mem;
     // new_ctx->os_stack_pfn = ctx->os_stack_pfn;
     // new_ctx->os_rsp = ctx->os_rsp;
     for(int i = 0; i < CNAME_MAX; i++){
         new_ctx->name[i] = ctx->name[i];
     }
-    new_ctx->regs = ctx->regs;
-    new_ctx->pending_signal_bitmap = ctx->pending_signal_bitmap;
+    for(int i = 0; i < MAX_MM_SEGS; i++){
+        new_ctx->mms[i] = ctx->mms[i];
+    }
     for(int i = 0; i < MAX_SIGNALS; i++){
         new_ctx->sighandlers[i] = ctx->sighandlers[i];
     }
-    new_ctx->ticks_to_alarm = ctx->ticks_to_alarm;
-    new_ctx->ticks_to_sleep = ctx->ticks_to_sleep;
-    new_ctx->alarm_config_time = ctx->alarm_config_time;
     for(int i = 0; i < MAX_OPEN_FILES; i++){
         new_ctx->files[i] = ctx->files[i];
     }
-    new_ctx->ctx_threads = ctx->ctx_threads;
 
     new_ctx->pgd = os_pfn_alloc(OS_PT_REG);
     for(int i = 0; i <= 3; i++){
         u64 begin = ctx->mms[i].start, end = ctx->mms[i].end;
         if(i < 3) end = ctx->mms[i].next_free;
+        // if(memcopy_range(begin, end, ctx->pgd, new_ctx->pgd) == -1) return -1;
         if(memcopy_range(begin, end, ctx->pgd, new_ctx->pgd) == -1) return -1;
     }
 
     if(ctx->vm_area != NULL){
         struct vm_area * headnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+        if(headnode == NULL) return -1;
         headnode->access_flags = 0x0;
         headnode->vm_start = MMAP_AREA_START;
         headnode->vm_end = MMAP_AREA_START + 4096;
@@ -554,6 +570,7 @@ long do_cfork(){
         struct vm_area * newpptr = new_ctx->vm_area;
         while(ptr != NULL){
             struct vm_area * addnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+            if(addnode == NULL) return -1;
             addnode->access_flags = ptr->access_flags;
             addnode->vm_start = ptr->vm_start;
             addnode->vm_end = ptr->vm_end;
@@ -563,14 +580,15 @@ long do_cfork(){
             ptr = ptr->vm_next;
         }
     }
-
     if(ctx->vm_area){
         struct vm_area * ptr = ctx->vm_area->vm_next;
         while(ptr != NULL){
+            // memcopy_range(ptr->vm_start, ptr->vm_end, ctx->pgd, new_ctx->pgd);
             memcopy_range(ptr->vm_start, ptr->vm_end, ctx->pgd, new_ctx->pgd);
             ptr = ptr->vm_next;
         }
     }
+    // printk("here5 %d\n", pid);
      /*
      * The remaining part must not be changed
      */
@@ -579,7 +597,6 @@ long do_cfork(){
     setup_child_context(new_ctx);
     return pid;
 }
-
 
 
 /* Cow fault handling, for the entire user address space
@@ -599,7 +616,7 @@ long handle_cow_fault(struct exec_context *current, u64 vaddr, int access_flags)
         offset = (vaddr >> (39 - 9*i))&((1ull << 9) - 1);
         pfn = (tab[offset] >> 12);
     }
-    printk("here3\n");
+    // printk("here3\n");
     int rc = get_pfn_refcount(pfn);
     if(rc > 1){
         u64 pfn2 = os_pfn_alloc(USER_REG);
