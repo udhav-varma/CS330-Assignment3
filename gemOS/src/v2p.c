@@ -24,7 +24,7 @@ void deallocate_page(struct exec_context * current, long addr)
     for(int c = 0; c < 4; c++){
         table = osmap(pfn);
         offset = ((addr >> (39 - 9*c)) & ((1ull << 9) - 1));
-        // if(!present_page(table[offset])) return;
+        if(!present_page(table[offset])) return;
         pfn = (table[offset] >> 12);
     }
 

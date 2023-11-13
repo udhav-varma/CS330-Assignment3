@@ -1,50 +1,41 @@
 #include<ulib.h>
 
-/*parent mmap and call cfork,
-then parent and child writes.
-first write causes copy-on-write and increase user_region_pages stats
-but second write only changes PTE entry */
-
 int main(u64 arg1, u64 arg2, u64 arg3, u64 arg4, u64 arg5)
 {
-  long pid;
   int pages = 4096;
-  long cow_fault;
-  char * mm1 = mmap(NULL, pages*2, PROT_READ|PROT_WRITE, 0);
-  if(mm1 < 0)
-  {
-    printf("Map failed \n");
-    return 1;
-  }
-  mm1[0] = 'A';
-  mm1[1] = 'A';
-  pid = cfork();
-  if(pid){
-      sleep(60);
-      printf("Parent mm1[0]:%c\n",mm1[0]);
-      mm1[1] = 'B';
-      printf("Parent mm1[1]:%c\n",mm1[1]);
-  }
-  else{
-      printf("Child mm1[0]:%c\n",mm1[0]);
-      mm1[1] = 'B';
-      printf("Child mm1[1]:%c\n",mm1[1]);
 
-      exit(0);
-  }
-  int val1 = munmap(mm1, pages*2);
-  if(val1 < 0)
+  // vm_area will be created without physical pages.
+  char * lazy_alloc = mmap(NULL, pages*50, PROT_READ|PROT_WRITE, 0);
+  if((long)lazy_alloc < 0)
   {
-    printf("Map failed\n");
+    // Testcase failed.
+    printf("Test case failed \n");
     return 1;
   }
   
-  cow_fault = get_cow_fault_stats();
-  if(cow_fault == 4)
-      printf("cow fault testcase passed\n");
-  else
-      printf("cow faults testcase failed\n");
+  // All accesses should result in page fault.
+  for(int i = 0; i<50; i++)
+  {
+    lazy_alloc[(pages * i)] = 'X';
+  }
 
-  return 0;
+  // Number of MMAP_Page_Faults should be 50 & 
+  // Number of vm_area should 1
+  pmap(0);
+
+  for(int i = 0; i<50; i++)
+  {
+    // Reading the value from physical page. It should be same as written
+    if(lazy_alloc[(pages * i)] != 'X')
+    {
+      // Testcase Failed;
+      printf("Test case failed \n");
+      return 0;
+    }
+  }
+  // Number of MMAP_Page_Faults should be 50 & 
+  // Number of vm_area should 1
+  pmap(0);
+
+ return 0;
 }
-
