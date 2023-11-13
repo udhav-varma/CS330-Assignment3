@@ -29,12 +29,63 @@ void deallocate_page(struct exec_context * current, u64 addr)
     }
 
     if(present_page(table[offset])){
-        os_pfn_free(USER_REG, pfn);
-        table[offset] ^= 1;
+        if(get_pfn_refcount(pfn) == 1){
+            put_pfn(pfn);
+            os_pfn_free(USER_REG, pfn);
+            table[offset] ^= 1;
+        }
+        else{
+            put_pfn(pfn);
+            table[offset] ^= 1;
+        }
     }
     asm volatile("invlpg (%0)" :: "r" (addr) : "memory");
 }
 
+/**
+ * Copies memory
+*/
+int memcopy(u64 begin, u64 pgd1, u64 pgd2)
+{
+    long * tab1 = osmap(pgd1), * tab2 = osmap(pgd2);
+    for(int i = 0; i < 4; i++){
+        long offset = ((begin >> (39 - 9*i)) & ((1ull << 9) - 1));
+        if(!(tab1[offset]&1)){
+            tab2[offset] = 0;
+            break;
+        }
+        else if(i < 3){
+            if(!(tab2[offset]&1)){
+                long page = os_pfn_alloc(OS_PT_REG);
+                if(page == 0) return -1;
+                tab2[offset] = (page << 12) + (tab1[offset]&((1ull << 12) - 1));
+            }
+            tab1 = osmap(tab1[offset] >> 12);
+            tab2 = osmap(tab2[offset] >> 12);
+        }
+        else{
+            if(tab1[offset]&(1ull << 3)) tab1[offset] ^= (1ull << 3);
+            tab2[offset] = tab1[offset];
+            get_pfn(tab2[offset] >> 12);
+            asm volatile("invlpg (%0)" :: "r" (begin): "memory");
+        }
+    }
+    return 0;
+}
+
+
+/**
+ * Copies range of addresses
+*/
+int memcopy_range(u64 begin, u64 end, u64 pgd1, u64 pgd2)
+{
+    printk("here4\n");
+    begin = (begin >> 12) << 12;
+    for(long addr = begin; addr < end; addr += 4096){
+        if(memcopy(addr, pgd1, pgd2) == -1) return -1;
+    }
+    return 0;
+}
 
 /**
  * Changes permission of page
@@ -49,12 +100,18 @@ void change_access(struct exec_context * current, u64 addr, int prot)
         if(!present_page(table[offset])) return;
         pfn = (table[offset] >> 12);
     }
-
-    if(prot&O_WRITE){
-        table[offset] |= (1ull << 3);
+    if(get_pfn_refcount(pfn) == 1){
+        if(prot&O_WRITE){
+            table[offset] |= (1ull << 3);
+        }
+        else{
+            if(table[offset]&(1ull << 3)) table[offset] ^= (1ull << 3);
+        }
     }
     else{
-        if(table[offset]&(1ull << 3)) table[offset] ^= (1ull << 3);
+        if(!(prot & O_WRITE)){
+            if(table[offset]&(1ull << 3)) table[offset] ^= (1ull << 3);
+        }
     }
     asm volatile("invlpg (%0)" :: "r" (addr) : "memory");
 }
@@ -393,6 +450,7 @@ long vm_area_pagefault(struct exec_context *current, u64 addr, int error_code)
     while(ptr != NULL && ptr->vm_end <= addr){
         ptr = ptr->vm_next;
     }
+    printk("here2\n");
     if(ptr == NULL || ptr->vm_start > addr){
         return -1; // No matching vma
     }
@@ -401,7 +459,9 @@ long vm_area_pagefault(struct exec_context *current, u64 addr, int error_code)
     }
     if(error_code == 0x7){
         if((ptr->access_flags & O_WRITE) == 0) return -1;
-        /*VERY IMPORTANT - REPLACE WITH handle_cow_fault*/ return 1;
+        handle_cow_fault(current, addr, ptr->access_flags);
+        printk("here\n");
+        return 1;
     }
     const long pru_flags = ((1ull << 4) | (1ull << 3) | 1ull);
     long * pgd = osmap(current->pgd);
@@ -452,7 +512,65 @@ long do_cfork(){
      
 
      /*--------------------- Your code [end] ----------------*/
-    
+    // vm_area
+    pid = new_ctx->pid;
+    new_ctx->ppid = ctx->pid;
+    new_ctx->type = ctx->type;
+    new_ctx->state = ctx->state;
+    new_ctx->used_mem = ctx->used_mem;
+    // new_ctx->os_stack_pfn = ctx->os_stack_pfn;
+    // new_ctx->os_rsp = ctx->os_rsp;
+    for(int i = 0; i < CNAME_MAX; i++){
+        new_ctx->name[i] = ctx->name[i];
+    }
+    new_ctx->regs = ctx->regs;
+    new_ctx->pending_signal_bitmap = ctx->pending_signal_bitmap;
+    for(int i = 0; i < MAX_SIGNALS; i++){
+        new_ctx->sighandlers[i] = ctx->sighandlers[i];
+    }
+    new_ctx->ticks_to_alarm = ctx->ticks_to_alarm;
+    new_ctx->ticks_to_sleep = ctx->ticks_to_sleep;
+    new_ctx->alarm_config_time = ctx->alarm_config_time;
+    for(int i = 0; i < MAX_OPEN_FILES; i++){
+        new_ctx->files[i] = ctx->files[i];
+    }
+    new_ctx->ctx_threads = ctx->ctx_threads;
+
+    new_ctx->pgd = os_pfn_alloc(OS_PT_REG);
+    for(int i = 0; i <= 3; i++){
+        u64 begin = ctx->mms[i].start, end = ctx->mms[i].end;
+        if(i < 3) end = ctx->mms[i].next_free;
+        if(memcopy_range(begin, end, ctx->pgd, new_ctx->pgd) == -1) return -1;
+    }
+
+    if(ctx->vm_area != NULL){
+        struct vm_area * headnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+        headnode->access_flags = 0x0;
+        headnode->vm_start = MMAP_AREA_START;
+        headnode->vm_end = MMAP_AREA_START + 4096;
+        headnode->vm_next = NULL;
+        new_ctx->vm_area = headnode;
+        struct vm_area * ptr = ctx->vm_area->vm_next;
+        struct vm_area * newpptr = new_ctx->vm_area;
+        while(ptr != NULL){
+            struct vm_area * addnode = (struct vm_area *) os_alloc(sizeof(struct vm_area));
+            addnode->access_flags = ptr->access_flags;
+            addnode->vm_start = ptr->vm_start;
+            addnode->vm_end = ptr->vm_end;
+            addnode->vm_next = NULL;
+            newpptr->vm_next = addnode;
+            addnode = newpptr;
+            ptr = ptr->vm_next;
+        }
+    }
+
+    if(ctx->vm_area){
+        struct vm_area * ptr = ctx->vm_area->vm_next;
+        while(ptr != NULL){
+            memcopy_range(ptr->vm_start, ptr->vm_end, ctx->pgd, new_ctx->pgd);
+            ptr = ptr->vm_next;
+        }
+    }
      /*
      * The remaining part must not be changed
      */
@@ -474,5 +592,28 @@ long do_cfork(){
 
 long handle_cow_fault(struct exec_context *current, u64 vaddr, int access_flags)
 {
-  return -1;
+    u64 pfn = current->pgd;
+    long * tab, offset;
+    for(int i = 0; i < 4; i++){
+        tab = osmap(pfn);
+        offset = (vaddr >> (39 - 9*i))&((1ull << 9) - 1);
+        pfn = (tab[offset] >> 12);
+    }
+    printk("here3\n");
+    int rc = get_pfn_refcount(pfn);
+    if(rc > 1){
+        u64 pfn2 = os_pfn_alloc(USER_REG);
+        if(pfn2 == 0) return -1;
+        tab[offset] = (pfn2 << 12) + (tab[offset]&(4095));
+        tab[offset] |= 8;
+        put_pfn(pfn);
+
+        long * ad1 = osmap(pfn), * ad2 = osmap(pfn2);
+        for(int i = 0; i < 512; i++) ad2[i] = ad1[i];
+    }
+    else{
+        if(!(tab[offset] & (1ull << 3))) tab[offset] ^= (1ull << 3);
+    }
+    asm volatile("invlpg (%0)" :: "r" (vaddr) : "memory");
+    return 1;
 }
